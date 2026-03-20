@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    const tournamentId = req.query.tournamentId || 'R2026011';
+    const tournamentId = req.query.tournamentId || 'R2026475';
     const data = await fetchPGATour(tournamentId);
     return res.status(200).json(data);
   } catch (err) {
@@ -16,7 +16,7 @@ export default async function handler(req, res) {
 
 async function fetchPGATour(tournamentId) {
   // Fetch PGA Tour leaderboard page
-  const url = 'https://www.pgatour.com/tournaments/2026/the-players-championship/' + tournamentId + '/leaderboard';
+  const url = 'https://www.pgatour.com/tournaments/2026/valspar-championship/' + tournamentId + '/leaderboard';
   const resp = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -84,8 +84,8 @@ async function fetchPGATour(tournamentId) {
   const tData = tournInfo?.state?.data || {};
 
   return {
-    tournament: tData.tournamentName || 'THE PLAYERS Championship',
-    course: tData.tournamentLocation || 'TPC Sawgrass',
+    tournament: tData.tournamentName || 'Valspar Championship',
+    course: tData.tournamentLocation || 'Copperhead',
     status: tData.tournamentStatus || '',
     round: lbQuery.state.data.rounds?.length || 0,
     lastUpdated: new Date().toISOString(),
