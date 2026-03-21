@@ -103,7 +103,16 @@ async function fetchScorecard(tournamentId, playerId) {
       currentRound: sc.currentRound,
       rounds,
       dkPointsTotal: Math.round(totalDK * 100) / 100,
-      dkPointsCurrentRound: rounds.find(r => r.isCurrent)?.dk?.total || 0
+      // CRITICAL: Only return current round DK pts if round is IN PROGRESS.
+      // If the round is complete, those points are already in the CSV snapshot.
+      // Adding them again would double-count.
+      dkPointsCurrentRound: (() => {
+        const cr = rounds.find(r => r.isCurrent);
+        if (!cr) return 0;
+        if (cr.complete) return 0; // Already in CSV — don't double-count
+        if (cr.holesPlayed === 0) return 0; // Round hasn't started
+        return cr.dk.total;
+      })()
     };
   } catch (err) {
     return { playerId, error: err.message };
