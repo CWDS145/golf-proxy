@@ -7,153 +7,113 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  const url = 'https://orchestrator.pgatour.com/graphql';
-  const apiKey = 'da2-gsrx5bibzbb4njvhl7t37wqyl4';
-
   try {
-    // Step 1: Get current/active tournaments
-    const tournamentsQuery = `
-      query CurrentTournaments {
-        tournamentsInProgress(tourCodes: ["r"]) {
-          id
-          tournamentName
-          status
-        }
-      }
-    `;
-
-    const tournResp = await fetch(url, {
-      method: 'POST',
+    // Fetch PGA Tour leaderboard page
+    const pageResp = await fetch('https://www.pgatour.com/leaderboard', {
       headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-      },
-      body: JSON.stringify({ query: tournamentsQuery }),
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
 
-    if (!tournResp.ok) {
-      const text = await tournResp.text();
-      return res.status(502).json({ error: 'Tournaments API error', status: tournResp.status, detail: text.substring(0, 500) });
+    if (!pageResp.ok) {
+      return res.status(502).json({ error: 'Failed to fetch PGA Tour page', status: pageResp.status });
     }
 
-    const tournData = await tournResp.json();
+    const html = await pageResp.text();
     
-    if (tournData.errors) {
-      // Try alternate query if tournamentsInProgress doesn't exist
-      const altQuery = `
-        query ActiveTournament {
-          activeTournament(tourCode: "r") {
-            id
-            tournamentName
-          }
-        }
-      `;
-      
-      const altResp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-        },
-        body: JSON.stringify({ query: altQuery }),
+    // Extract __NEXT_DATA__ JSON
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/);
+    if (!match) {
+      return res.status(502).json({ error: 'Could not find __NEXT_DATA__ in page' });
+    }
+
+    const nextData = JSON.parse(match[1]);
+    const pageProps = nextData?.props?.pageProps;
+    
+    if (!pageProps) {
+      return res.status(502).json({ error: 'Invalid page data structure' });
+    }
+
+    // Get tournament info
+    const tournament = pageProps.tournament;
+    const leaderboardId = pageProps.leaderboardId;
+
+    // Find leaderboard and odds in dehydrated state
+    const queries = pageProps.dehydratedState?.queries || [];
+    const lbQuery = queries.find(q => q.queryKey?.[0] === 'leaderboard');
+    const oddsQuery = queries.find(q => q.queryKey?.[0] === 'oddsToWin');
+    
+    const leaderboard = lbQuery?.state?.data;
+    const oddsData = oddsQuery?.state?.data;
+
+    if (!leaderboard?.players) {
+      return res.status(404).json({ 
+        error: 'No leaderboard data',
+        tournament: tournament?.tournamentName,
+        status: tournament?.tournamentStatus
       });
-      
-      const altData = await altResp.json();
-      
-      if (altData.errors) {
-        return res.status(502).json({ 
-          error: 'Cannot find active tournament', 
-          detail1: tournData.errors[0]?.message,
-          detail2: altData.errors[0]?.message
-        });
-      }
-      
-      const activeTourney = altData?.data?.activeTournament;
-      if (activeTourney?.id) {
-        return await getLeaderboard(res, url, apiKey, activeTourney.id);
-      }
-      
-      return res.status(404).json({ error: 'No active tournament found' });
     }
 
-    const tournaments = tournData?.data?.tournamentsInProgress;
-    
-    if (!tournaments || tournaments.length === 0) {
-      return res.status(404).json({ error: 'No tournaments in progress' });
+    // Build odds lookup by player ID
+    const oddsMap = {};
+    if (oddsData?.players) {
+      oddsData.players.forEach(p => {
+        // Convert "+2200" to numeric 22, "+100000" to 1000, etc.
+        const oddsStr = p.odds || '';
+        let oddsNum = null;
+        if (oddsStr.startsWith('+')) {
+          oddsNum = parseInt(oddsStr.substring(1)) / 100;
+        } else if (oddsStr.startsWith('-')) {
+          oddsNum = 100 / Math.abs(parseInt(oddsStr));
+        }
+        oddsMap[p.playerId] = oddsNum;
+      });
     }
 
-    const currentTournament = tournaments[0];
-    return await getLeaderboard(res, url, apiKey, currentTournament.id);
+    // Transform players
+    const players = leaderboard.players.map(p => {
+      const scoring = p.scoringData || {};
+      const playerInfo = p.player || {};
+      
+      // Parse total score (e.g., "-11" -> -11, "E" -> 0)
+      let total = 0;
+      const totalStr = scoring.total || '';
+      if (totalStr === 'E') total = 0;
+      else if (totalStr) total = parseInt(totalStr) || 0;
+
+      // Parse thru (e.g., "F", "12", "")
+      let thru = scoring.thru || '';
+      if (thru === 'F' || thru === '') thru = 18;
+      else thru = parseInt(thru) || 0;
+
+      // Determine status
+      let status = 'ACTIVE';
+      if (scoring.status === 'cut') status = 'CUT';
+      else if (scoring.status === 'wd') status = 'WD';
+      else if (thru === 18 || scoring.thru === 'F') status = 'COMPLETE';
+
+      return {
+        name: playerInfo.displayName || `${playerInfo.firstName} ${playerInfo.lastName}`,
+        position: scoring.position || '',
+        total,
+        thru,
+        round: scoring.currentRound || 0,
+        status,
+        odds: oddsMap[playerInfo.id] || null
+      };
+    });
+
+    return res.status(200).json({
+      tournament: tournament?.tournamentName,
+      tournamentId: leaderboardId,
+      roundStatus: tournament?.roundStatusDisplay || tournament?.roundStatus,
+      round: tournament?.currentRound,
+      playerCount: players.length,
+      players
+    });
 
   } catch (err) {
     console.error('Proxy error:', err);
     return res.status(500).json({ error: 'Proxy error', message: err.message });
   }
-}
-
-async function getLeaderboard(res, url, apiKey, tournamentId) {
-  const leaderboardQuery = `
-    query Leaderboard($id: ID!) {
-      leaderboardV3(id: $id, tourCode: "r") {
-        tournamentName
-        roundStatus
-        players {
-          firstName
-          lastName
-          position
-          total
-          thru
-          currentRound
-          status
-          oddsToWin
-        }
-      }
-    }
-  `;
-
-  const lbResp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify({ 
-      query: leaderboardQuery,
-      variables: { id: tournamentId }
-    }),
-  });
-
-  if (!lbResp.ok) {
-    const text = await lbResp.text();
-    return res.status(502).json({ error: 'Leaderboard API error', status: lbResp.status, detail: text.substring(0, 500) });
-  }
-
-  const lbData = await lbResp.json();
-  
-  if (lbData.errors) {
-    return res.status(502).json({ error: 'Leaderboard GraphQL error', detail: lbData.errors[0]?.message });
-  }
-
-  const lb = lbData?.data?.leaderboardV3;
-  if (!lb) {
-    return res.status(404).json({ error: 'No leaderboard data', tournamentId });
-  }
-
-  const players = (lb.players || []).map(p => ({
-    name: `${p.firstName} ${p.lastName}`,
-    position: p.position,
-    total: p.total,
-    thru: p.thru,
-    round: p.currentRound,
-    status: p.status,
-    odds: p.oddsToWin ? parseFloat(p.oddsToWin) : null
-  }));
-
-  return res.status(200).json({
-    tournament: lb.tournamentName,
-    tournamentId,
-    roundStatus: lb.roundStatus,
-    playerCount: players.length,
-    players
-  });
 }
