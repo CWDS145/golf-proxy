@@ -7,15 +7,67 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
+  const url = 'https://orchestrator.pgatour.com/graphql';
+  const apiKey = 'da2-gsrx5bibzbb4njvhl7t37wqyl4';
+
   try {
-    // PGA Tour GraphQL endpoint
-    const url = 'https://orchestrator.pgatour.com/graphql';
-    const apiKey = 'da2-gsrx5bibzbb4njvhl7t37wqyl4';
+    // Step 1: Get current tournament ID
+    const scheduleQuery = `
+      query Schedule {
+        schedule(tourCode: "r") {
+          completed {
+            id
+            tournamentName
+          }
+          current {
+            id
+            tournamentName
+          }
+          upcoming {
+            id
+            tournamentName
+          }
+        }
+      }
+    `;
+
+    const scheduleResp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+      },
+      body: JSON.stringify({ query: scheduleQuery }),
+    });
+
+    if (!scheduleResp.ok) {
+      const text = await scheduleResp.text();
+      return res.status(502).json({ error: 'Schedule API error', status: scheduleResp.status, detail: text.substring(0, 500) });
+    }
+
+    const scheduleData = await scheduleResp.json();
     
-    // Query for current tournament leaderboard
-    const query = `
-      query Leaderboard {
-        leaderboardV3(tourCode: "r") {
+    if (scheduleData.errors) {
+      return res.status(502).json({ error: 'Schedule GraphQL error', detail: scheduleData.errors[0]?.message });
+    }
+
+    const schedule = scheduleData?.data?.schedule;
+    const currentTournament = schedule?.current?.[0];
+    
+    if (!currentTournament?.id) {
+      return res.status(404).json({ 
+        error: 'No active tournament',
+        schedule: {
+          current: schedule?.current,
+          upcoming: schedule?.upcoming?.slice(0, 3)
+        }
+      });
+    }
+
+    // Step 2: Get leaderboard with tournament ID
+    const leaderboardQuery = `
+      query Leaderboard($id: ID!) {
+        leaderboardV3(id: $id, tourCode: "r") {
           tournamentName
           roundStatus
           players {
@@ -32,41 +84,32 @@ export default async function handler(req, res) {
       }
     `;
 
-    const response = await fetch(url, {
+    const lbResp = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ 
+        query: leaderboardQuery,
+        variables: { id: currentTournament.id }
+      }),
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error('PGA API error:', response.status, text);
-      return res.status(502).json({ 
-        error: 'PGA Tour API error', 
-        status: response.status,
-        detail: text.substring(0, 200)
-      });
+    if (!lbResp.ok) {
+      const text = await lbResp.text();
+      return res.status(502).json({ error: 'Leaderboard API error', status: lbResp.status, detail: text.substring(0, 500) });
     }
 
-    const data = await response.json();
+    const lbData = await lbResp.json();
     
-    if (data.errors) {
-      console.error('GraphQL errors:', data.errors);
-      return res.status(502).json({ 
-        error: 'GraphQL error', 
-        detail: data.errors[0]?.message || 'Unknown'
-      });
+    if (lbData.errors) {
+      return res.status(502).json({ error: 'Leaderboard GraphQL error', detail: lbData.errors[0]?.message });
     }
 
-    const lb = data?.data?.leaderboardV3;
+    const lb = lbData?.data?.leaderboardV3;
     if (!lb) {
-      return res.status(404).json({ 
-        error: 'No leaderboard data',
-        detail: 'Tournament may not be active'
-      });
+      return res.status(404).json({ error: 'No leaderboard data', tournamentId: currentTournament.id });
     }
 
     // Transform to simpler format
@@ -82,6 +125,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       tournament: lb.tournamentName,
+      tournamentId: currentTournament.id,
       roundStatus: lb.roundStatus,
       playerCount: players.length,
       players
@@ -89,9 +133,6 @@ export default async function handler(req, res) {
 
   } catch (err) {
     console.error('Proxy error:', err);
-    return res.status(500).json({ 
-      error: 'Proxy error', 
-      message: err.message 
-    });
+    return res.status(500).json({ error: 'Proxy error', message: err.message });
   }
 }
