@@ -34,11 +34,9 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'Invalid page data structure' });
     }
 
-    // Get tournament info
     const tournament = pageProps.tournament;
     const leaderboardId = pageProps.leaderboardId;
 
-    // Find leaderboard and odds in dehydrated state
     const queries = pageProps.dehydratedState?.queries || [];
     const lbQuery = queries.find(q => q.queryKey?.[0] === 'leaderboard');
     const oddsQuery = queries.find(q => q.queryKey?.[0] === 'oddsToWin');
@@ -54,18 +52,19 @@ export default async function handler(req, res) {
       });
     }
 
-    // Build odds lookup by player ID
+    // Build odds lookup
     const oddsMap = {};
     if (oddsData?.players) {
       oddsData.players.forEach(p => {
-        // Convert "+2200" to numeric 22, "+100000" to 1000, etc.
         const oddsStr = p.odds || '';
         let oddsNum = null;
+
         if (oddsStr.startsWith('+')) {
           oddsNum = parseInt(oddsStr.substring(1)) / 100;
         } else if (oddsStr.startsWith('-')) {
           oddsNum = 100 / Math.abs(parseInt(oddsStr));
         }
+
         oddsMap[p.playerId] = oddsNum;
       });
     }
@@ -75,22 +74,37 @@ export default async function handler(req, res) {
       const scoring = p.scoringData || {};
       const playerInfo = p.player || {};
       
-      // Parse total score (e.g., "-11" -> -11, "E" -> 0)
+      // Total score
       let total = 0;
       const totalStr = scoring.total || '';
       if (totalStr === 'E') total = 0;
       else if (totalStr) total = parseInt(totalStr) || 0;
 
-      // Parse thru (e.g., "F", "12", "")
-      let thru = scoring.thru || '';
-      if (thru === 'F' || thru === '') thru = 18;
-      else thru = parseInt(thru) || 0;
+      // Thru
+      let thruRaw = scoring.thru || '';
+      let thru = 0;
 
-      // Determine status
+      if (thruRaw === 'F') {
+        thru = 18;
+      } else {
+        thru = parseInt(thruRaw) || 0;
+      }
+
+      // ✅ FIXED STATUS LOGIC
       let status = 'ACTIVE';
-      if (scoring.status === 'cut') status = 'CUT';
-      else if (scoring.status === 'wd') status = 'WD';
-      else if (thru === 18 || scoring.thru === 'F') status = 'COMPLETE';
+
+      // Only trust WD explicitly
+      if (scoring.status && scoring.status.toLowerCase() === 'wd') {
+        status = 'WD';
+      }
+
+      // Completed round
+      else if (thruRaw === 'F') {
+        status = 'COMPLETE';
+      }
+
+      // 🚫 DO NOT assign CUT from scoring.status
+      // This was the bug causing false CUTs (e.g., Min Woo Lee)
 
       return {
         name: playerInfo.displayName || `${playerInfo.firstName} ${playerInfo.lastName}`,
