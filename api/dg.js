@@ -9,6 +9,7 @@ const ALLOWED = new Set([
   'preds/player-decompositions',
   'betting-tools/outrights',
   'historical-odds/outrights',
+  'historical-dfs-data/points',
   'historical-odds/event-list',
   'get-schedule',
 ]);
